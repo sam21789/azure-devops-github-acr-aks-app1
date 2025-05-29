@@ -1,0 +1,66 @@
+trigger:
+- main
+variables:
+  azureSubscription: 'c30ee499-fc32-49c4-96bf-d6148e73bb2f'
+  resourceGroup: 'demo'
+  acrName: 'pankajacr21'
+  acrLoginServer: 'pankajacr21.azurecr.io' # e.g., myregistry.azurecr.io
+  imageName: 'nginx'
+  imageTag: 'latest'
+  containerGroupName: 'nginx-container-group'
+  location: 'centralindia' # e.g., eastus
+stages:
+- stage: BuildAndPush
+  displayName: Build and Push NGINX Image
+  jobs:
+  - job: BuildPush
+    displayName: Build and Push Image
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: Login to Azure using Managed Identity
+      inputs:
+        azureSubscription: $(azureSubscription)
+        scriptType: bash
+        # Using 'login --identity' for leveraging the Agent's Managed Identity
+        # Ensure the Az CLI version supports login --identity
+        script: |
+          az login --identity
+          az acr login --name $(acrName)
+          
+    - script: |
+        docker build -t $(acrLoginServer)/$(imageName):$(imageTag) .
+      displayName: Build NGINX Docker Image
+- task: Docker@2
+      displayName: Push Docker Image to ACR
+      inputs:
+        containerRegistry: '$(acrName)'
+        repository: '$(imageName)'
+        command: push
+        tags: '$(imageTag)'
+- stage: Deploy
+  displayName: Deploy to Azure Container Instances
+  dependsOn: BuildAndPush
+  jobs:
+  - job: DeployACI
+    displayName: Deploy NGINX to ACI
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: Create or Update Azure Container Instance
+      inputs:
+        azureSubscription: $(azureSubscription)
+        scriptType: bash
+        script: |
+          az container create \
+            --resource-group $(resourceGroup) \
+            --name $(containerGroupName) \
+            --image $(acrLoginServer)/$(imageName):$(imageTag) \
+            --dns-name-label $(containerGroupName) \
+            --ports 80 \
+            --location $(location) \
+            --registry-login-server $(acrLoginServer) \
+            --os-type Linux \
+            --ip-address public
